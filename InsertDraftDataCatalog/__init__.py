@@ -5,12 +5,28 @@ import pyodbc
 import json
 import os
 import time
+import requests
 
 # Retrieve connection details from environment variables
 server = os.environ.get('AZURE_SQL_SERVER')
 database = os.environ.get('AZURE_SQL_DATABASE')
 username = os.environ.get('AZURE_SQL_USER')
 password = os.environ.get('AZURE_SQL_PASSWORD')
+jiraUrl = os.environ.get('JIRA_URL')
+
+def submitJira(jsonData,url):
+    # Define the headers, including the content type and any necessary authentication tokens
+    headers = {
+        'Content-Type': 'application/json',
+        # 'Authorization': 'Bearer your_auth_token'  # Uncomment and replace if authentication is required
+    }
+
+    # Send the POST request
+    response = requests.post(url, headers=headers,
+                         data=json.dumps(jsonData))
+    
+
+
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     # Get the JSON from the POST request body
@@ -29,70 +45,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         TrustServerCertificate=no;
         Connection Timeout=30;
     """.format(server=server, database=database, username=username, password=password)
-    print(connection_string)
-#     # Your JSON data
-#     json_array = [
-#   {
-#     "name": "UsageDate",
-#     "description": "aaa",
-#     "is_sensitive": 0,
-#     "data_type": "DATE",
-#     "dataset_path": "demo-catalog-01/Marketing/01 Curated/cost-analysis",
-#     "status": "Pending",
-#     "create_datetime": "2023-12-20T08:23:26.608Z",
-#     "create_user": "frontend",
-#     "last_modified_datetime": "2023-12-20T08:23:26.608Z",
-#     "last_modified_user": "frontend"
-#   },
-#   {
-#     "name": "CostUSD",
-#     "description": "bbb",
-#     "is_sensitive": 1,
-#     "data_type": "DOUBLE",
-#     "dataset_path": "demo-catalog-01/Marketing/01 Curated/cost-analysis",
-#     "status": "Pending",
-#     "create_datetime": "2023-12-20T08:23:26.608Z",
-#     "create_user": "frontend",
-#     "last_modified_datetime": "2023-12-20T08:23:26.608Z",
-#     "last_modified_user": "frontend"
-#   },
-#   {
-#     "name": "Cost",
-#     "description": "",
-#     "is_sensitive": 0,
-#     "data_type": "DOUBLE",
-#     "dataset_path": "demo-catalog-01/Marketing/01 Curated/cost-analysis",
-#     "status": "Pending",
-#     "create_datetime": "2023-12-20T08:23:26.608Z",
-#     "create_user": "frontend",
-#     "last_modified_datetime": "2023-12-20T08:23:26.608Z",
-#     "last_modified_user": "frontend"
-#   },
-#   {
-#     "name": "ForecastCost",
-#     "description": "",
-#     "is_sensitive": 0,
-#     "data_type": "DOUBLE",
-#     "dataset_path": "demo-catalog-01/Marketing/01 Curated/cost-analysis",
-#     "status": "Pending",
-#     "create_datetime": "2023-12-20T08:23:26.608Z",
-#     "create_user": "frontend",
-#     "last_modified_datetime": "2023-12-20T08:23:26.608Z",
-#     "last_modified_user": "frontend"
-#   },
-#   {
-#     "name": "Currency",
-#     "description": "",
-#     "is_sensitive": 0,
-#     "data_type": "VARCHAR",
-#     "dataset_path": "demo-catalog-01/Marketing/01 Curated/cost-analysis",
-#     "status": "Pending",
-#     "create_datetime": "2023-12-20T08:23:26.608Z",
-#     "create_user": "frontend",
-#     "last_modified_datetime": "2023-12-20T08:23:26.608Z",
-#     "last_modified_user": "frontend"
-#   }
-# ]
+
+    datasetPath = json_array[0].get('dataset_path')
 
 
     # SQL query to insert JSON string into the table
@@ -118,11 +72,18 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     with pyodbc.connect(connection_string) as conn:
         with conn.cursor() as cursor:
             try:
+                cursor.execute(f"select count(1) as cnt from dbo.DATA_CATALOG_DRAFT where status='pending' and dataset_path = '{datasetPath}'")
+                # Fetch all the rows
+                rows = cursor.fetchall()
+                for row in rows:
+                    if row[0] > 0:
+                        responseText = "There has already been pending request for this dataset for approval"
+                        return func.HttpResponse(responseText)
+                    
                 # Iterate over the JSON array and insert each item
                 batch_key = int(round(time.time() * 1000))
                 for item in json_array:
-                    # Convert each JSON object to a string
-                    # json_string = json.dumps(item)
+                    item['batch_key'] = batch_key
 
                     data_tuple = (
                     batch_key,
@@ -141,10 +102,28 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     # Execute the SQL query
                     cursor.execute(sql_query, data_tuple)
 
-                # Commit the transaction
-                conn.commit()
-                return func.HttpResponse("JSON data inserted successfully.")
+
+                # Define the headers, including the content type and any necessary authentication tokens
+                headers = {
+                    'Content-Type': 'application/json',
+                        # 'Authorization': 'Bearer your_auth_token'  # Uncomment and replace if authentication is required
+                }
+
+                # Send the POST request
+                response = requests.post(jiraUrl, headers=headers,data=json.dumps(json_array))
+                
+                if response.status_code == 200 and response.text == 'Jira submitted successfully.':
+                     # Commit the transaction
+                    conn.commit()
+                    return func.HttpResponse("Data catalog draft can be imported successfully")
+                else:
+                    conn.rollback()
+                    return func.HttpResponse('Get some issue when submitting Jira ticket', status_code=9000)
+    
+
             except pyodbc.DatabaseError as e:
                 conn.rollback()  # Rollback the transaction on error
-                return func.HttpResponse("Error inserting JSON data:", e)
+                logging.error(f"Database error occurred: {str(e)}")
+                # return func.HttpResponse(str(e), status_code=9001)
+
     
